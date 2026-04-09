@@ -36,7 +36,7 @@ class HttpError extends Error {
 
 interface BaseProxyRoute {
   encodedProvider: string;
-  encodedModel: string;
+  encodedModelMap: string;
 }
 
 interface OpenAIProxyRoute extends BaseProxyRoute {
@@ -110,10 +110,9 @@ async function proxyRequest(
   route: ProxyRoute,
 ): Promise<Response> {
   const providerUrl = decodeBase64Url(route.encodedProvider);
-  const modelId = decodeBase64Url(route.encodedModel);
+  const modelMap = decodeModelMap(route.encodedModelMap);
 
   validateProviderUrl(providerUrl);
-  assertNonEmpty(modelId, "模型 ID 不能为空。");
 
   const payload = await parseJsonObject(request);
   const incomingModel = payload.model;
@@ -122,7 +121,16 @@ async function proxyRequest(
     throw new HttpError(400, "请求体里的 model 必须是非空字符串。");
   }
 
-  payload.model = modelId;
+  const resolvedModel = modelMap[incomingModel];
+
+  if (!resolvedModel) {
+    throw new HttpError(
+      400,
+      `模型别名 "${incomingModel}" 未在映射表中找到。可用别名: ${Object.keys(modelMap).join(", ")}`,
+    );
+  }
+
+  payload.model = resolvedModel;
 
   if (route.type === "openai") {
     applyOpenAIReasoning(payload, route.reasoningToken);
@@ -245,7 +253,7 @@ function parseProxyRoute(pathname: string): RouteParseResult {
       route: {
         type: "openai",
         encodedProvider: parts[0],
-        encodedModel: parts[1],
+        encodedModelMap: parts[1],
         reasoningToken: parts[2],
       },
       error: null,
@@ -261,7 +269,7 @@ function parseProxyRoute(pathname: string): RouteParseResult {
     return {
       route: null,
       error:
-        "OpenAI 路径缺少思考等级，请使用 /{encodedProvider}/{encodedModel}/{reasoningToken}/v1/chat/completions。",
+        "OpenAI 路径缺少思考等级，请使用 /{encodedProvider}/{encodedModelMap}/{reasoningToken}/v1/chat/completions。",
     };
   }
 
@@ -270,7 +278,7 @@ function parseProxyRoute(pathname: string): RouteParseResult {
       route: {
         type: "anthropic",
         encodedProvider: parts[0],
-        encodedModel: parts[1],
+        encodedModelMap: parts[1],
       },
       error: null,
     };
@@ -373,6 +381,42 @@ function decodeBase64Url(input: string): string {
   } catch {
     throw new HttpError(400, "路径参数解码失败。");
   }
+}
+
+function decodeModelMap(encoded: string): Record<string, string> {
+  const raw = decodeBase64Url(encoded);
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HttpError(400, "模型映射表不是合法 JSON。");
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(400, "模型映射表必须是 JSON 对象。");
+  }
+
+  const map = parsed as Record<string, unknown>;
+  const result: Record<string, string> = {};
+
+  for (const [alias, modelId] of Object.entries(map)) {
+    if (typeof modelId !== "string" || modelId.trim() === "") {
+      throw new HttpError(
+        400,
+        `模型映射表中别名 "${alias}" 对应的模型 ID 必须是非空字符串。`,
+      );
+    }
+
+    result[alias] = modelId;
+  }
+
+  if (Object.keys(result).length === 0) {
+    throw new HttpError(400, "模型映射表不能为空。");
+  }
+
+  return result;
 }
 
 function validateProviderUrl(value: string): void {
@@ -542,7 +586,8 @@ function renderHomePage(): string {
       }
 
       input,
-      select {
+      select,
+      textarea {
         width: 100%;
         padding: 14px 16px;
         border: 1px solid rgba(21, 48, 53, 0.12);
@@ -566,7 +611,8 @@ function renderHomePage(): string {
       }
 
       input:focus,
-      select:focus {
+      select:focus,
+      textarea:focus {
         outline: none;
         border-color: rgba(10, 147, 150, 0.55);
         box-shadow: 0 0 0 4px rgba(10, 147, 150, 0.12);
@@ -805,17 +851,17 @@ function renderHomePage(): string {
                 <small>只用于生成展示内容，页面不会保存或提交这个密钥。</small>
               </div>
 
-              <div class="field">
-                <label for="model-id">模型 ID</label>
-                <input
-                  id="model-id"
-                  name="model-id"
-                  type="text"
+              <div class="field full">
+                <label for="model-mappings">模型映射</label>
+                <textarea
+                  id="model-mappings"
+                  name="model-mappings"
                   required
                   spellcheck="false"
-                  placeholder="gpt-4o-mini 或 claude-sonnet-4-20250514"
-                />
-                <small>这里填真实上游模型名，外部对 Cursor 暴露的是固定别名。</small>
+                  rows="3"
+                  placeholder="my-gpt4:gpt-4o&#10;my-mini:gpt-4o-mini"
+                ></textarea>
+                <small>每行一个映射，格式 <code>别名:真实模型ID</code>。别名是 Cursor 里填的模型名，真实模型ID 是上游的模型名。</small>
               </div>
 
               <div class="field">
@@ -824,7 +870,6 @@ function renderHomePage(): string {
                   <option value="openai">openai</option>
                   <option value="anthropic">anthropic</option>
                 </select>
-                <small id="alias-hint">当前对外模型别名：openai-123</small>
               </div>
 
               <div class="field" id="reasoning-level-field">
@@ -881,22 +926,21 @@ function renderHomePage(): string {
     </div>
 
     <script>
-      const MODEL_ALIASES = {
-        openai: "openai-123",
-        anthropic: "claude-123",
+      const DEFAULT_MAPPINGS = {
+        openai: "openai-123:gpt-4o",
+        anthropic: "claude-123:claude-sonnet-4-20250514",
       };
 
       const form = document.getElementById("relay-form");
       const providerUrlInput = document.getElementById("provider-url");
       const providerKeyInput = document.getElementById("provider-key");
-      const modelIdInput = document.getElementById("model-id");
+      const modelMappingsInput = document.getElementById("model-mappings");
       const providerTypeSelect = document.getElementById("provider-type");
       const reasoningLevelField = document.getElementById("reasoning-level-field");
       const forceReasoningField = document.getElementById("force-reasoning-field");
       const reasoningLevelSelect = document.getElementById("reasoning-level");
       const forceReasoningInput = document.getElementById("force-reasoning");
       const forceReasoningStatus = document.getElementById("force-reasoning-status");
-      const aliasHint = document.getElementById("alias-hint");
       const overlay = document.getElementById("modal-overlay");
       const modalTitle = document.getElementById("modal-title");
       const modalSubtitle = document.getElementById("modal-subtitle");
@@ -922,8 +966,18 @@ function renderHomePage(): string {
           .replace(/=+$/g, "");
       }
 
-      function getAlias(type) {
-        return MODEL_ALIASES[type];
+      function parseMappings(text) {
+        const map = {};
+        for (const line of text.split("\\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const idx = trimmed.indexOf(":");
+          if (idx < 1) continue;
+          const alias = trimmed.slice(0, idx).trim();
+          const modelId = trimmed.slice(idx + 1).trim();
+          if (alias && modelId) map[alias] = modelId;
+        }
+        return map;
       }
 
       function buildReasoningToken(values) {
@@ -937,10 +991,11 @@ function renderHomePage(): string {
       }
 
       function getFormValues() {
+        const mappings = parseMappings(modelMappingsInput.value);
         return {
           providerUrl: providerUrlInput.value.trim(),
           providerKey: providerKeyInput.value.trim(),
-          modelId: modelIdInput.value.trim(),
+          mappings,
           providerType: providerTypeSelect.value,
           reasoningLevel: reasoningLevelSelect.value,
           forceReasoning: forceReasoningInput.checked,
@@ -954,7 +1009,7 @@ function renderHomePage(): string {
 
         const values = getFormValues();
 
-        if (!values.providerUrl || !values.providerKey || !values.modelId) {
+        if (!values.providerUrl || !values.providerKey || Object.keys(values.mappings).length === 0) {
           return null;
         }
 
@@ -963,29 +1018,31 @@ function renderHomePage(): string {
 
       function buildBaseUrl(values) {
         const encodedProvider = utf8ToBase64Url(values.providerUrl);
-        const encodedModel = utf8ToBase64Url(values.modelId);
+        const encodedModelMap = utf8ToBase64Url(JSON.stringify(values.mappings));
         const reasoningToken = buildReasoningToken(values);
         return {
           encodedProvider,
-          encodedModel,
+          encodedModelMap,
           baseUrl:
             values.providerType === "openai"
-              ? \`\${window.location.origin}/\${encodedProvider}/\${encodedModel}/\${reasoningToken}/v1\`
-              : \`\${window.location.origin}/\${encodedProvider}/\${encodedModel}/v1\`,
+              ? \`\${window.location.origin}/\${encodedProvider}/\${encodedModelMap}/\${reasoningToken}/v1\`
+              : \`\${window.location.origin}/\${encodedProvider}/\${encodedModelMap}/v1\`,
         };
       }
 
       function buildConfig(values) {
         const { baseUrl } = buildBaseUrl(values);
+        const aliases = Object.keys(values.mappings);
         return [
           \`地址: \${baseUrl}\`,
-          \`模型 id: \${getAlias(values.providerType)}\`,
+          \`模型 id: \${aliases.join(", ")}\`,
           \`密钥: \${values.providerKey}\`,
         ].join("\\n");
       }
 
       function buildOpenAICurl(values) {
         const { baseUrl } = buildBaseUrl(values);
+        const firstAlias = Object.keys(values.mappings)[0];
         const lines = [
           \`curl --location '\${baseUrl}/chat/completions' \\\\\`,
           \`--header 'Authorization: Bearer \${values.providerKey}' \\\\\`,
@@ -997,7 +1054,7 @@ function renderHomePage(): string {
           '      \"role\": \"user\"',
           "    }",
           "  ],",
-          \`  \"model\": \"\${MODEL_ALIASES.openai}\",\`,
+          \`  \"model\": \"\${firstAlias}\",\`,
         ];
 
         if (!values.forceReasoning) {
@@ -1017,13 +1074,14 @@ function renderHomePage(): string {
 
       function buildAnthropicCurl(values) {
         const { baseUrl } = buildBaseUrl(values);
+        const firstAlias = Object.keys(values.mappings)[0];
         return [
           \`curl --location '\${baseUrl}/messages' \\\\\`,
           \`--header 'x-api-key: \${values.providerKey}' \\\\\`,
           \`--header 'anthropic-version: 2023-06-01' \\\\\`,
           \`--header 'Content-Type: application/json' \\\\\`,
           "--data '{",
-          \`  \"model\": \"\${MODEL_ALIASES.anthropic}\",\`,
+          \`  \"model\": \"\${firstAlias}\",\`,
           '  \"max_tokens\": 64,',
           '  \"messages\": [',
           "    {",
@@ -1055,11 +1113,18 @@ function renderHomePage(): string {
         overlay.setAttribute("aria-hidden", "true");
       }
 
+      let lastAutoType = providerTypeSelect.value;
+      modelMappingsInput.value = DEFAULT_MAPPINGS[lastAutoType];
+
       function refreshPreview() {
         const values = getFormValues();
         const isOpenAI = values.providerType === "openai";
 
-        aliasHint.textContent = \`当前对外模型别名：\${getAlias(values.providerType)}\`;
+        if (values.providerType !== lastAutoType) {
+          modelMappingsInput.value = DEFAULT_MAPPINGS[values.providerType];
+          lastAutoType = values.providerType;
+        }
+
         reasoningLevelField.hidden = !isOpenAI;
         forceReasoningField.hidden = !isOpenAI;
         forceReasoningStatus.textContent =
@@ -1129,7 +1194,7 @@ function renderHomePage(): string {
       [
         providerUrlInput,
         providerKeyInput,
-        modelIdInput,
+        modelMappingsInput,
         providerTypeSelect,
         reasoningLevelSelect,
         forceReasoningInput,
@@ -1150,6 +1215,7 @@ export const __test = {
   OPENAI_REASONING_LEVELS,
   buildUpstreamHeaders,
   decodeBase64Url,
+  decodeModelMap,
   joinUrl,
   parseOpenAIReasoningToken,
   parseProxyRoute,

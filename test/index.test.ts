@@ -11,6 +11,10 @@ function encodeBase64Url(value: string): string {
     .replace(/=+$/g, "");
 }
 
+function encodeModelMap(map: Record<string, string>): string {
+  return encodeBase64Url(JSON.stringify(map));
+}
+
 test("GET / returns the HTML form page", async () => {
   const response = await handleRequest(
     new Request("https://worker.example/", { method: "GET" }),
@@ -30,7 +34,7 @@ test("GET / returns the HTML form page", async () => {
 
 test("openai proxy injects URL reasoning when request body omits it", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o-mini");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o-mini" });
 
   const originalFetch = globalThis.fetch;
   let upstreamInput = "";
@@ -53,7 +57,7 @@ test("openai proxy injects URL reasoning when request body omits it", async () =
   try {
     const response = await handleRequest(
       new Request(
-        `https://worker.example/${encodedProvider}/${encodedModel}/medium/v1/chat/completions?trace=1`,
+        `https://worker.example/${encodedProvider}/${encodedModelMap}/medium/v1/chat/completions?trace=1`,
         {
           method: "POST",
           headers: {
@@ -94,7 +98,7 @@ test("openai proxy injects URL reasoning when request body omits it", async () =
 
 test("openai proxy preserves request reasoning when URL is not forced", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o-mini");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o-mini" });
 
   const originalFetch = globalThis.fetch;
   let upstreamInit: RequestInit | undefined;
@@ -115,7 +119,7 @@ test("openai proxy preserves request reasoning when URL is not forced", async ()
   try {
     const response = await handleRequest(
       new Request(
-        `https://worker.example/${encodedProvider}/${encodedModel}/medium/v1/chat/completions`,
+        `https://worker.example/${encodedProvider}/${encodedModelMap}/medium/v1/chat/completions`,
         {
           method: "POST",
           headers: {
@@ -143,7 +147,7 @@ test("openai proxy preserves request reasoning when URL is not forced", async ()
 
 test("openai proxy force route overrides request reasoning", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o-mini");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o-mini" });
 
   const originalFetch = globalThis.fetch;
   let upstreamInit: RequestInit | undefined;
@@ -164,7 +168,7 @@ test("openai proxy force route overrides request reasoning", async () => {
   try {
     const response = await handleRequest(
       new Request(
-        `https://worker.example/${encodedProvider}/${encodedModel}/force-medium/v1/chat/completions`,
+        `https://worker.example/${encodedProvider}/${encodedModelMap}/force-medium/v1/chat/completions`,
         {
           method: "POST",
           headers: {
@@ -191,7 +195,7 @@ test("openai proxy force route overrides request reasoning", async () => {
 
 test("anthropic proxy maps bearer Authorization into x-api-key", async () => {
   const encodedProvider = encodeBase64Url("https://api.anthropic.com/v1");
-  const encodedModel = encodeBase64Url("claude-sonnet-4-20250514");
+  const encodedModelMap = encodeModelMap({ "claude-123": "claude-sonnet-4-20250514" });
 
   const originalFetch = globalThis.fetch;
   let upstreamInput = "";
@@ -214,7 +218,7 @@ test("anthropic proxy maps bearer Authorization into x-api-key", async () => {
   try {
     const response = await handleRequest(
       new Request(
-        `https://worker.example/${encodedProvider}/${encodedModel}/v1/messages`,
+        `https://worker.example/${encodedProvider}/${encodedModelMap}/v1/messages`,
         {
           method: "POST",
           headers: {
@@ -250,7 +254,7 @@ test("anthropic proxy maps bearer Authorization into x-api-key", async () => {
 
 test("streaming responses are returned without rewriting", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o" });
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = (async () => {
@@ -265,7 +269,7 @@ test("streaming responses are returned without rewriting", async () => {
   try {
     const response = await handleRequest(
       new Request(
-        `https://worker.example/${encodedProvider}/${encodedModel}/high/v1/chat/completions`,
+        `https://worker.example/${encodedProvider}/${encodedModelMap}/high/v1/chat/completions`,
         {
           method: "POST",
           headers: {
@@ -310,11 +314,11 @@ test("invalid base64url path returns 400", async () => {
 
 test("missing auth header returns 400 for openai route", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o" });
 
   const response = await handleRequest(
     new Request(
-      `https://worker.example/${encodedProvider}/${encodedModel}/medium/v1/chat/completions`,
+      `https://worker.example/${encodedProvider}/${encodedModelMap}/medium/v1/chat/completions`,
       {
         method: "POST",
         headers: {
@@ -334,11 +338,11 @@ test("missing auth header returns 400 for openai route", async () => {
 
 test("old openai path without reasoning token returns 400", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o" });
 
   const response = await handleRequest(
     new Request(
-      `https://worker.example/${encodedProvider}/${encodedModel}/v1/chat/completions`,
+      `https://worker.example/${encodedProvider}/${encodedModelMap}/v1/chat/completions`,
       {
         method: "POST",
         headers: {
@@ -359,11 +363,11 @@ test("old openai path without reasoning token returns 400", async () => {
 
 test("invalid reasoning token returns 400", async () => {
   const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
-  const encodedModel = encodeBase64Url("gpt-4o");
+  const encodedModelMap = encodeModelMap({ "openai-123": "gpt-4o" });
 
   const response = await handleRequest(
     new Request(
-      `https://worker.example/${encodedProvider}/${encodedModel}/force-ultra/v1/chat/completions`,
+      `https://worker.example/${encodedProvider}/${encodedModelMap}/force-ultra/v1/chat/completions`,
       {
         method: "POST",
         headers: {
@@ -384,17 +388,17 @@ test("invalid reasoning token returns 400", async () => {
 
 test("route parser distinguishes openai and anthropic paths", () => {
   const encodedProvider = encodeBase64Url("https://api.example.com/v1");
-  const encodedModel = encodeBase64Url("demo-model");
+  const encodedModelMap = encodeModelMap({ "my-model": "demo-model" });
 
   assert.deepEqual(
     __test.parseProxyRoute(
-      `/${encodedProvider}/${encodedModel}/high/v1/chat/completions`,
+      `/${encodedProvider}/${encodedModelMap}/high/v1/chat/completions`,
     ),
     {
       route: {
         type: "openai",
         encodedProvider,
-        encodedModel,
+        encodedModelMap,
         reasoningToken: "high",
       },
       error: null,
@@ -402,12 +406,12 @@ test("route parser distinguishes openai and anthropic paths", () => {
   );
 
   assert.deepEqual(
-    __test.parseProxyRoute(`/${encodedProvider}/${encodedModel}/v1/messages`),
+    __test.parseProxyRoute(`/${encodedProvider}/${encodedModelMap}/v1/messages`),
     {
       route: {
         type: "anthropic",
         encodedProvider,
-        encodedModel,
+        encodedModelMap,
       },
       error: null,
     },
@@ -424,4 +428,75 @@ test("reasoning token parser normalizes force tokens", () => {
     normalizedReasoning: "medium",
     isForced: false,
   });
+});
+
+test("unknown model alias returns 400", async () => {
+  const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
+  const encodedModelMap = encodeModelMap({ "my-gpt": "gpt-4o" });
+
+  const response = await handleRequest(
+    new Request(
+      `https://worker.example/${encodedProvider}/${encodedModelMap}/medium/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-openai",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "wrong-alias",
+          messages: [{ role: "user", content: "HI" }],
+        }),
+      },
+    ),
+  );
+
+  assert.equal(response.status, 400);
+  assert.match(await response.text(), /wrong-alias/);
+});
+
+test("multi-alias model map routes to correct upstream model", async () => {
+  const encodedProvider = encodeBase64Url("https://api.openai.com/v1");
+  const encodedModelMap = encodeModelMap({
+    "my-gpt4": "gpt-4o",
+    "my-mini": "gpt-4o-mini",
+  });
+
+  const originalFetch = globalThis.fetch;
+  let upstreamInit: RequestInit | undefined;
+
+  globalThis.fetch = (async (
+    _input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    upstreamInit = init;
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    await handleRequest(
+      new Request(
+        `https://worker.example/${encodedProvider}/${encodedModelMap}/medium/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer sk-openai",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "my-mini",
+            messages: [{ role: "user", content: "HI" }],
+          }),
+        },
+      ),
+    );
+
+    const forwardedBody = JSON.parse(String(upstreamInit?.body));
+    assert.equal(forwardedBody.model, "gpt-4o-mini");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
